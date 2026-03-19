@@ -1,0 +1,488 @@
+name: GitHub-Notion 연동 자동화
+
+on:
+  issues:
+    types: [opened]
+  push:
+    branches:
+      - 'feature/TASK-*'
+  pull_request:
+    types: [opened, closed]
+    branches:
+      - main
+  pull_request_review:
+    types: [submitted]
+
+jobs:
+  # Job 1: Issue가 생성되면 Notion 티켓 자동 생성
+  issue-to-notion:
+    name: Issue → Notion 티켓 생성
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name == 'issues' &&
+      github.event.action == 'opened' &&
+      !contains(github.event.issue.labels.*.name, 'auto-created')
+    steps:
+      - name: Notion 티켓 생성 및 브랜치 연결
+        uses: actions/github-script@v7
+        env:
+          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+          NOTION_DB_ID: ${{ secrets.NOTION_DB_ID }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const notionKey = process.env.NOTION_API_KEY;
+            const dbId = process.env.NOTION_DB_ID;
+            const issue = context.payload.issue;
+            const repo = context.repo;
+
+            const notionHeaders = {
+              'Authorization': `Bearer ${notionKey}`,
+              'Content-Type': 'application/json',
+              'Notion-Version': '2022-06-28'
+            };
+
+            // 1. Notion 티켓 생성
+            console.log(`Issue "${issue.title}" 에 대한 Notion 티켓 생성 중...`);
+            const createRes = await fetch('https://api.notion.com/v1/pages', {
+              method: 'POST',
+              headers: notionHeaders,
+              body: JSON.stringify({
+                parent: { database_id: dbId },
+                properties: {
+                  '제목': {
+                    title: [{ text: { content: issue.title } }]
+                  },
+                  '상태': {
+                    select: { name: '백로그' }
+                  },
+                  '요구사항': {
+                    rich_text: [{ text: { content: issue.body || '' } }]
+                  },
+                  'Issue URL': {
+                    url: issue.html_url
+                  }
+                }
+              })
+            });
+
+            if (!createRes.ok) {
+              const err = await createRes.text();
+              throw new Error(`Notion 페이지 생성 실패: ${err}`);
+            }
+
+            const createdPage = await createRes.json();
+            const pageId = createdPage.id;
+            const notionUrl = createdPage.url;
+            console.log(`Notion 페이지 생성 완료: ${pageId}`);
+
+            // 2. 생성된 페이지에서 unique_id 조회 (생성 응답에 number가 없을 수 있음)
+            const pageRes = await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
+              headers: notionHeaders
+            });
+            const pageData = await pageRes.json();
+
+            // unique_id 타입 속성 찾기
+            const uidProp = Object.values(pageData.properties).find(p => p.type === 'unique_id');
+            const ticketNumber = uidProp?.unique_id?.number;
+
+            if (!ticketNumber) {
+              throw new Error('티켓 번호(unique_id)를 가져오지 못했습니다.');
+            }
+            const ticketId = `TASK-${ticketNumber}`;
+            const branchName = `feature/${ticketId}`;
+            console.log(`티켓 ID: ${ticketId}, 브랜치명: ${branchName}`);
+
+            // 3. main 브랜치의 최신 SHA 조회
+            const { data: mainRef } = await github.rest.git.getRef({
+              owner: repo.owner,
+              repo: repo.repo,
+              ref: 'heads/main'
+            });
+            const mainSha = mainRef.object.sha;
+
+            // 4. feature/TASK-XXX 브랜치 생성
+            await github.rest.git.createRef({
+              owner: repo.owner,
+              repo: repo.repo,
+              ref: `refs/heads/${branchName}`,
+              sha: mainSha
+            });
+            console.log(`브랜치 생성 완료: ${branchName}`);
+
+            // 5. Issue에 Notion 티켓 및 브랜치 정보 코멘트 작성
+            await github.rest.issues.createComment({
+              owner: repo.owner,
+              repo: repo.repo,
+              issue_number: issue.number,
+              body: `🔗 노션 티켓: ${notionUrl} | 브랜치: \`${branchName}\``
+            });
+            console.log('Issue 코멘트 작성 완료');
+
+  # Job 2: feature/TASK-* 브랜치에 push 시 상태를 "진행중"으로 전환
+  push-to-notion:
+    name: Push → Notion 상태 진행중
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    steps:
+      - name: Notion 티켓 상태 업데이트 (진행중)
+        uses: actions/github-script@v7
+        env:
+          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+          NOTION_DB_ID: ${{ secrets.NOTION_DB_ID }}
+        with:
+          script: |
+            const notionKey = process.env.NOTION_API_KEY;
+            const dbId = process.env.NOTION_DB_ID;
+
+            // 브랜치명에서 TASK 번호 추출 (예: refs/heads/feature/TASK-3 → 3)
+            const branchRef = context.ref; // refs/heads/feature/TASK-3
+            const match = branchRef.match(/feature\/TASK-(\d+)/);
+            if (!match) {
+              console.log('TASK 브랜치 패턴과 일치하지 않음. 건너뜀.');
+              return;
+            }
+            const ticketNumber = parseInt(match[1], 10);
+            console.log(`추출된 티켓 번호: ${ticketNumber}`);
+
+            const notionHeaders = {
+              'Authorization': `Bearer ${notionKey}`,
+              'Content-Type': 'application/json',
+              'Notion-Version': '2022-06-28'
+            };
+
+            // DB 전체 조회 후 unique_id.number로 매칭
+            const page = await findNotionPageByTicketNumber(notionHeaders, dbId, ticketNumber);
+            if (!page) {
+              console.log(`TASK-${ticketNumber} 에 해당하는 Notion 페이지를 찾지 못했습니다.`);
+              return;
+            }
+
+            // 현재 상태 확인
+            const statusProp = Object.values(page.properties).find(p => p.type === 'select' && p.select?.name);
+            const currentStatus = statusProp?.select?.name;
+            console.log(`현재 상태: ${currentStatus}`);
+
+            // "할당됨" 상태일 때만 "진행중"으로 변경 (이미 진행중 이상이면 건너뜀)
+            const progressOrder = ['백로그', '할당됨', '진행중', '코드리뷰', '완료'];
+            const currentIdx = progressOrder.indexOf(currentStatus);
+            const targetIdx = progressOrder.indexOf('진행중');
+
+            if (currentIdx >= targetIdx) {
+              console.log(`현재 상태(${currentStatus})가 이미 "진행중" 이상입니다. 건너뜀.`);
+              return;
+            }
+
+            await updateNotionStatus(notionHeaders, page.id, '진행중');
+            console.log(`TASK-${ticketNumber} 상태를 "진행중"으로 변경 완료`);
+
+            // 공통 함수 정의
+            async function findNotionPageByTicketNumber(headers, dbId, ticketNumber) {
+              const res = await fetch(`https://api.notion.com/v1/databases/${dbId}/query`, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({ page_size: 100 })
+              });
+              const data = await res.json();
+              return data.results?.find(p => {
+                const uid = Object.values(p.properties).find(prop => prop.type === 'unique_id');
+                return uid && uid.unique_id?.number === ticketNumber;
+              }) ?? null;
+            }
+
+            async function updateNotionStatus(headers, pageId, statusName) {
+              const res = await fetch(`https://api.notion.com/v1/pages/${pageId}`, {
+                method: 'PATCH',
+                headers,
+                body: JSON.stringify({
+                  properties: {
+                    '상태': { select: { name: statusName } }
+                  }
+                })
+              });
+              if (!res.ok) {
+                const err = await res.text();
+                throw new Error(`Notion 상태 업데이트 실패: ${err}`);
+              }
+            }
+
+  # Job 3: PR이 열리면 Notion 티켓 상태를 "코드리뷰"로 전환 + PR URL 기록
+  pr-to-notion:
+    name: PR Opened → Notion 상태 코드리뷰
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name == 'pull_request' &&
+      github.event.action == 'opened' &&
+      startsWith(github.event.pull_request.head.ref, 'feature/TASK-')
+    steps:
+      - name: Notion 티켓 상태 업데이트 (코드리뷰) 및 PR URL 기록
+        uses: actions/github-script@v7
+        env:
+          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+          NOTION_DB_ID: ${{ secrets.NOTION_DB_ID }}
+        with:
+          script: |
+            const notionKey = process.env.NOTION_API_KEY;
+            const dbId = process.env.NOTION_DB_ID;
+            const pr = context.payload.pull_request;
+
+            // head 브랜치명에서 TASK 번호 추출
+            const match = pr.head.ref.match(/feature\/TASK-(\d+)/);
+            if (!match) {
+              console.log('TASK 브랜치 패턴과 일치하지 않음. 건너뜀.');
+              return;
+            }
+            const ticketNumber = parseInt(match[1], 10);
+            console.log(`추출된 티켓 번호: ${ticketNumber}`);
+
+            const notionHeaders = {
+              'Authorization': `Bearer ${notionKey}`,
+              'Content-Type': 'application/json',
+              'Notion-Version': '2022-06-28'
+            };
+
+            const page = await findNotionPageByTicketNumber(notionHeaders, dbId, ticketNumber);
+            if (!page) {
+              console.log(`TASK-${ticketNumber} 에 해당하는 Notion 페이지를 찾지 못했습니다.`);
+              return;
+            }
+
+            // 상태를 "코드리뷰"로 변경하고 PR URL 기록
+            const res = await fetch(`https://api.notion.com/v1/pages/${page.id}`, {
+              method: 'PATCH',
+              headers: notionHeaders,
+              body: JSON.stringify({
+                properties: {
+                  '상태': { select: { name: '코드리뷰' } },
+                  'PR URL': { url: pr.html_url }
+                }
+              })
+            });
+
+            if (!res.ok) {
+              const err = await res.text();
+              throw new Error(`Notion 업데이트 실패: ${err}`);
+            }
+            console.log(`TASK-${ticketNumber} 상태를 "코드리뷰"로 변경, PR URL 기록 완료`);
+
+            async function findNotionPageByTicketNumber(headers, dbId, ticketNumber) {
+              const res = await fetch(`https://api.notion.com/v1/databases/${dbId}/query`, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({ page_size: 100 })
+              });
+              const data = await res.json();
+              return data.results?.find(p => {
+                const uid = Object.values(p.properties).find(prop => prop.type === 'unique_id');
+                return uid && uid.unique_id?.number === ticketNumber;
+              }) ?? null;
+            }
+
+  # Job 4: PR이 머지되면 Notion 티켓 상태를 "완료"로 전환
+  merge-to-notion:
+    name: PR Merged → Notion 상태 완료
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name == 'pull_request' &&
+      github.event.action == 'closed' &&
+      github.event.pull_request.merged == true &&
+      startsWith(github.event.pull_request.head.ref, 'feature/TASK-')
+    steps:
+      - name: Notion 티켓 상태 업데이트 (완료)
+        uses: actions/github-script@v7
+        env:
+          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+          NOTION_DB_ID: ${{ secrets.NOTION_DB_ID }}
+        with:
+          script: |
+            const notionKey = process.env.NOTION_API_KEY;
+            const dbId = process.env.NOTION_DB_ID;
+            const pr = context.payload.pull_request;
+
+            const match = pr.head.ref.match(/feature\/TASK-(\d+)/);
+            if (!match) {
+              console.log('TASK 브랜치 패턴과 일치하지 않음. 건너뜀.');
+              return;
+            }
+            const ticketNumber = parseInt(match[1], 10);
+            console.log(`추출된 티켓 번호: ${ticketNumber}`);
+
+            const notionHeaders = {
+              'Authorization': `Bearer ${notionKey}`,
+              'Content-Type': 'application/json',
+              'Notion-Version': '2022-06-28'
+            };
+
+            const page = await findNotionPageByTicketNumber(notionHeaders, dbId, ticketNumber);
+            if (!page) {
+              console.log(`TASK-${ticketNumber} 에 해당하는 Notion 페이지를 찾지 못했습니다.`);
+              return;
+            }
+
+            const res = await fetch(`https://api.notion.com/v1/pages/${page.id}`, {
+              method: 'PATCH',
+              headers: notionHeaders,
+              body: JSON.stringify({
+                properties: {
+                  '상태': { select: { name: '완료' } }
+                }
+              })
+            });
+
+            if (!res.ok) {
+              const err = await res.text();
+              throw new Error(`Notion 업데이트 실패: ${err}`);
+            }
+            console.log(`TASK-${ticketNumber} 상태를 "완료"로 변경 완료`);
+
+            async function findNotionPageByTicketNumber(headers, dbId, ticketNumber) {
+              const res = await fetch(`https://api.notion.com/v1/databases/${dbId}/query`, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({ page_size: 100 })
+              });
+              const data = await res.json();
+              return data.results?.find(p => {
+                const uid = Object.values(p.properties).find(prop => prop.type === 'unique_id');
+                return uid && uid.unique_id?.number === ticketNumber;
+              }) ?? null;
+            }
+
+  # Job 5: PR 리뷰에서 "Changes Requested" 시 Notion 티켓 상태를 "진행중"으로 전환
+  review-changes-requested:
+    name: Review Changes Requested → Notion 상태 진행중
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name == 'pull_request_review' &&
+      github.event.review.state == 'changes_requested' &&
+      startsWith(github.event.pull_request.head.ref, 'feature/TASK-')
+    steps:
+      - name: Notion 티켓 상태 업데이트 (코드리뷰 반려 → 진행중)
+        uses: actions/github-script@v7
+        env:
+          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+          NOTION_DB_ID: ${{ secrets.NOTION_DB_ID }}
+        with:
+          script: |
+            const notionKey = process.env.NOTION_API_KEY;
+            const dbId = process.env.NOTION_DB_ID;
+            const pr = context.payload.pull_request;
+
+            const match = pr.head.ref.match(/feature\/TASK-(\d+)/);
+            if (!match) {
+              console.log('TASK 브랜치 패턴과 일치하지 않음. 건너뜀.');
+              return;
+            }
+            const ticketNumber = parseInt(match[1], 10);
+            console.log(`코드리뷰 반려: 티켓 번호 ${ticketNumber}`);
+
+            const notionHeaders = {
+              'Authorization': `Bearer ${notionKey}`,
+              'Content-Type': 'application/json',
+              'Notion-Version': '2022-06-28'
+            };
+
+            const page = await findNotionPageByTicketNumber(notionHeaders, dbId, ticketNumber);
+            if (!page) {
+              console.log(`TASK-${ticketNumber} 에 해당하는 Notion 페이지를 찾지 못했습니다.`);
+              return;
+            }
+
+            const res = await fetch(`https://api.notion.com/v1/pages/${page.id}`, {
+              method: 'PATCH',
+              headers: notionHeaders,
+              body: JSON.stringify({
+                properties: {
+                  '상태': { select: { name: '진행중' } }
+                }
+              })
+            });
+
+            if (!res.ok) {
+              const err = await res.text();
+              throw new Error(`Notion 업데이트 실패: ${err}`);
+            }
+            console.log(`TASK-${ticketNumber} 상태를 "진행중"으로 변경 완료 (코드리뷰 반려)`);
+
+            async function findNotionPageByTicketNumber(headers, dbId, ticketNumber) {
+              const res = await fetch(`https://api.notion.com/v1/databases/${dbId}/query`, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({ page_size: 100 })
+              });
+              const data = await res.json();
+              return data.results?.find(p => {
+                const uid = Object.values(p.properties).find(prop => prop.type === 'unique_id');
+                return uid && uid.unique_id?.number === ticketNumber;
+              }) ?? null;
+            }
+
+  # Job 6: PR이 머지 없이 닫히면 Notion 티켓 상태를 "진행중"으로 복원
+  pr-closed-not-merged:
+    name: PR Closed (not merged) → Notion 상태 진행중
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name == 'pull_request' &&
+      github.event.action == 'closed' &&
+      github.event.pull_request.merged == false &&
+      startsWith(github.event.pull_request.head.ref, 'feature/TASK-')
+    steps:
+      - name: Notion 티켓 상태 업데이트 (PR 취소 → 진행중)
+        uses: actions/github-script@v7
+        env:
+          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+          NOTION_DB_ID: ${{ secrets.NOTION_DB_ID }}
+        with:
+          script: |
+            const notionKey = process.env.NOTION_API_KEY;
+            const dbId = process.env.NOTION_DB_ID;
+            const pr = context.payload.pull_request;
+
+            const match = pr.head.ref.match(/feature\/TASK-(\d+)/);
+            if (!match) {
+              console.log('TASK 브랜치 패턴과 일치하지 않음. 건너뜀.');
+              return;
+            }
+            const ticketNumber = parseInt(match[1], 10);
+            console.log(`PR 미머지 종료: 티켓 번호 ${ticketNumber}`);
+
+            const notionHeaders = {
+              'Authorization': `Bearer ${notionKey}`,
+              'Content-Type': 'application/json',
+              'Notion-Version': '2022-06-28'
+            };
+
+            const page = await findNotionPageByTicketNumber(notionHeaders, dbId, ticketNumber);
+            if (!page) {
+              console.log(`TASK-${ticketNumber} 에 해당하는 Notion 페이지를 찾지 못했습니다.`);
+              return;
+            }
+
+            const res = await fetch(`https://api.notion.com/v1/pages/${page.id}`, {
+              method: 'PATCH',
+              headers: notionHeaders,
+              body: JSON.stringify({
+                properties: {
+                  '상태': { select: { name: '진행중' } }
+                }
+              })
+            });
+
+            if (!res.ok) {
+              const err = await res.text();
+              throw new Error(`Notion 업데이트 실패: ${err}`);
+            }
+            console.log(`TASK-${ticketNumber} 상태를 "진행중"으로 변경 완료 (PR 미머지 종료)`);
+
+            async function findNotionPageByTicketNumber(headers, dbId, ticketNumber) {
+              const res = await fetch(`https://api.notion.com/v1/databases/${dbId}/query`, {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({ page_size: 100 })
+              });
+              const data = await res.json();
+              return data.results?.find(p => {
+                const uid = Object.values(p.properties).find(prop => prop.type === 'unique_id');
+                return uid && uid.unique_id?.number === ticketNumber;
+              }) ?? null;
+            }
