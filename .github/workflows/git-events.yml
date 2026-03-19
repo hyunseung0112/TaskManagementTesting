@@ -120,7 +120,7 @@ jobs:
               owner: repo.owner,
               repo: repo.repo,
               issue_number: issue.number,
-              body: `🔗 노션 티켓: ${notionUrl} | 브랜치: \`${branchName}\``
+              body: `🔗 **노션 티켓:** ${notionUrl}\n\n**브랜치:** \`${branchName}\`\n\n\`\`\`bash\ngit fetch origin && git checkout ${branchName}\n\`\`\``
             });
             console.log('Issue 코멘트 작성 완료');
 
