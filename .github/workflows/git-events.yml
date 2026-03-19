@@ -9,7 +9,7 @@ on:
   pull_request:
     types: [opened, closed]
     branches:
-      - main
+      - master
   pull_request_review:
     types: [submitted]
 
@@ -93,11 +93,11 @@ jobs:
             const branchName = `feature/${ticketId}`;
             console.log(`티켓 ID: ${ticketId}, 브랜치명: ${branchName}`);
 
-            // 3. main 브랜치의 최신 SHA 조회
+            // 3. master 브랜치의 최신 SHA 조회
             const { data: mainRef } = await github.rest.git.getRef({
               owner: repo.owner,
               repo: repo.repo,
-              ref: 'heads/main'
+              ref: 'heads/master'
             });
             const mainSha = mainRef.object.sha;
 
