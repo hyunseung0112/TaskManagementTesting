@@ -183,12 +183,23 @@ jobs:
 
             // 공통 함수 정의
             async function findNotionPageByTicketNumber(headers, dbId, ticketNumber) {
+              console.log(`DB 쿼리 시작: dbId=${dbId}, ticketNumber=${ticketNumber}`);
               const res = await fetch(`https://api.notion.com/v1/databases/${dbId}/query`, {
                 method: 'POST',
                 headers,
                 body: JSON.stringify({ page_size: 100 })
               });
+              if (!res.ok) {
+                const errText = await res.text();
+                console.log(`DB 쿼리 실패 ${res.status}: ${errText}`);
+                return null;
+              }
               const data = await res.json();
+              console.log(`DB 쿼리 결과: ${data.results?.length || 0}개 페이지`);
+              if (data.results?.length > 0) {
+                const firstUid = Object.values(data.results[0].properties).find(prop => prop.type === 'unique_id');
+                console.log(`첫 번째 페이지 unique_id: ${JSON.stringify(firstUid?.unique_id)}`);
+              }
               return data.results?.find(p => {
                 const uid = Object.values(p.properties).find(prop => prop.type === 'unique_id');
                 return uid && uid.unique_id?.number === ticketNumber;
@@ -271,12 +282,23 @@ jobs:
             console.log(`TASK-${ticketNumber} 상태를 "코드리뷰"로 변경, PR URL 기록 완료`);
 
             async function findNotionPageByTicketNumber(headers, dbId, ticketNumber) {
+              console.log(`DB 쿼리 시작: dbId=${dbId}, ticketNumber=${ticketNumber}`);
               const res = await fetch(`https://api.notion.com/v1/databases/${dbId}/query`, {
                 method: 'POST',
                 headers,
                 body: JSON.stringify({ page_size: 100 })
               });
+              if (!res.ok) {
+                const errText = await res.text();
+                console.log(`DB 쿼리 실패 ${res.status}: ${errText}`);
+                return null;
+              }
               const data = await res.json();
+              console.log(`DB 쿼리 결과: ${data.results?.length || 0}개 페이지`);
+              if (data.results?.length > 0) {
+                const firstUid = Object.values(data.results[0].properties).find(prop => prop.type === 'unique_id');
+                console.log(`첫 번째 페이지 unique_id: ${JSON.stringify(firstUid?.unique_id)}`);
+              }
               return data.results?.find(p => {
                 const uid = Object.values(p.properties).find(prop => prop.type === 'unique_id');
                 return uid && uid.unique_id?.number === ticketNumber;
@@ -341,12 +363,23 @@ jobs:
             console.log(`TASK-${ticketNumber} 상태를 "완료"로 변경 완료`);
 
             async function findNotionPageByTicketNumber(headers, dbId, ticketNumber) {
+              console.log(`DB 쿼리 시작: dbId=${dbId}, ticketNumber=${ticketNumber}`);
               const res = await fetch(`https://api.notion.com/v1/databases/${dbId}/query`, {
                 method: 'POST',
                 headers,
                 body: JSON.stringify({ page_size: 100 })
               });
+              if (!res.ok) {
+                const errText = await res.text();
+                console.log(`DB 쿼리 실패 ${res.status}: ${errText}`);
+                return null;
+              }
               const data = await res.json();
+              console.log(`DB 쿼리 결과: ${data.results?.length || 0}개 페이지`);
+              if (data.results?.length > 0) {
+                const firstUid = Object.values(data.results[0].properties).find(prop => prop.type === 'unique_id');
+                console.log(`첫 번째 페이지 unique_id: ${JSON.stringify(firstUid?.unique_id)}`);
+              }
               return data.results?.find(p => {
                 const uid = Object.values(p.properties).find(prop => prop.type === 'unique_id');
                 return uid && uid.unique_id?.number === ticketNumber;
@@ -410,12 +443,23 @@ jobs:
             console.log(`TASK-${ticketNumber} 상태를 "진행중"으로 변경 완료 (코드리뷰 반려)`);
 
             async function findNotionPageByTicketNumber(headers, dbId, ticketNumber) {
+              console.log(`DB 쿼리 시작: dbId=${dbId}, ticketNumber=${ticketNumber}`);
               const res = await fetch(`https://api.notion.com/v1/databases/${dbId}/query`, {
                 method: 'POST',
                 headers,
                 body: JSON.stringify({ page_size: 100 })
               });
+              if (!res.ok) {
+                const errText = await res.text();
+                console.log(`DB 쿼리 실패 ${res.status}: ${errText}`);
+                return null;
+              }
               const data = await res.json();
+              console.log(`DB 쿼리 결과: ${data.results?.length || 0}개 페이지`);
+              if (data.results?.length > 0) {
+                const firstUid = Object.values(data.results[0].properties).find(prop => prop.type === 'unique_id');
+                console.log(`첫 번째 페이지 unique_id: ${JSON.stringify(firstUid?.unique_id)}`);
+              }
               return data.results?.find(p => {
                 const uid = Object.values(p.properties).find(prop => prop.type === 'unique_id');
                 return uid && uid.unique_id?.number === ticketNumber;
@@ -480,12 +524,23 @@ jobs:
             console.log(`TASK-${ticketNumber} 상태를 "진행중"으로 변경 완료 (PR 미머지 종료)`);
 
             async function findNotionPageByTicketNumber(headers, dbId, ticketNumber) {
+              console.log(`DB 쿼리 시작: dbId=${dbId}, ticketNumber=${ticketNumber}`);
               const res = await fetch(`https://api.notion.com/v1/databases/${dbId}/query`, {
                 method: 'POST',
                 headers,
                 body: JSON.stringify({ page_size: 100 })
               });
+              if (!res.ok) {
+                const errText = await res.text();
+                console.log(`DB 쿼리 실패 ${res.status}: ${errText}`);
+                return null;
+              }
               const data = await res.json();
+              console.log(`DB 쿼리 결과: ${data.results?.length || 0}개 페이지`);
+              if (data.results?.length > 0) {
+                const firstUid = Object.values(data.results[0].properties).find(prop => prop.type === 'unique_id');
+                console.log(`첫 번째 페이지 unique_id: ${JSON.stringify(firstUid?.unique_id)}`);
+              }
               return data.results?.find(p => {
                 const uid = Object.values(p.properties).find(prop => prop.type === 'unique_id');
                 return uid && uid.unique_id?.number === ticketNumber;
