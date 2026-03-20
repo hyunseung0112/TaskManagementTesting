@@ -42,6 +42,6 @@ fun Greeting(name: String, modifier: Modifier = Modifier) {
 @Composable
 fun GreetingPreview() {
     MyApplicationTheme {
-        Greeting("안녕하세요 반갑습니다 진짜 반갑습니다 아 정말로 반갑습니다")
+        Greeting("안녕하세요ㅇㅇ 반갑습니다 진짜 반갑습니다 아 정말로 반갑습니다")
     }
 }
